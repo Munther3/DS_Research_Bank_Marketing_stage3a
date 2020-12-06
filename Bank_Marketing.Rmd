@@ -1,0 +1,745 @@
+---
+title: "Bank Marketing Data Set"
+output: html_notebook
+---
+
+## Introduction:
+
+
+_The data is related with direct marketing campaigns of a Portuguese banking institution. The marketing campaigns were based on phone calls. Often, more than one contact to the same client was required, in order to access if the product (bank term deposit) would be ('yes') or not ('no') subscribed._
+
+## Attribute Information:
+_This database contains 17 attributes_
+ 
+
+| Variable | Description |
+|----------|-------------|
+|`Age`|numeric|
+|`Job`|  type of job (categorical: 'admin.','blue-collar','entrepreasic.9y','high.school','illiterate','professional.course','university.degree','unknown |
+|`Marital`| marital status (categorical: 'divorced','married','single','unknown'; note: 'divorced' means divorced or widowed) |
+|`Education `| (categorical: primary, secondary, tertiary and unknown) |
+|`Balance`| Balance of the individual |
+|`Default`|  has credit in default? (categorical: 'no','yes','unknown')|
+|`Housing`|has housing loan? (categorical: ign: number o'no','yes','unknown')|
+|`Loan`|has personal loan? (categorical: 'no','yes','unknown')|
+|`Contact`|contact communication type (categorical: 'cellular','telephone')|
+|`Month`|last contact month of year (categorical: 'jan', 'feb', 'mar', ..., 'nov', 'dec')|
+|`day_of_week`| last contact day of the week (categorical: 'mon','tue','wed','thu','fri')|
+|`Duration`|last contact duration, in seconds (numeric).|
+|`Campaign`| number of contacts performed during this campaign and for this client (numeric, includes last contact)|
+|`pdays`| number of days that passed by after the client was last contacted from a previous campaign (numeric; 999 means client was not previously contacted|
+|`Previous`|number of contacts performed before this campaign and for this client (numeric) |
+|`poutcome`| outcome of the previous marketing campaign (categorical: 'failure','nonexistent','success')|
+|`Deposit`| has the client subscribed a term deposit? (binary: 'yes','no')| 
+ \
+ \
+ \
+ \
+ \
+ \
+ \
+ 
+## Data Overview:
+ _Below we can see the data table showing all attributes_
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Helper packages
+library(dplyr)    # for data manipulation
+library(ggplot2)  # for awesome graphics
+library(visdat)   # for additional visualizations
+
+# Feature engineering packages
+library(caret)    # for various ML tasks
+library(recipes)  # for feature engineering tasks
+library(readr)
+library(e1071)
+# Helper packages
+library(dplyr)    # for data manipulation
+library(ggplot2)  # for awesome graphics
+
+# Modeling packages
+library(caret)    # for cross-validation, etc.
+library(rsample)  # for sampling
+
+# Model interpretability packages
+library(vip) 
+library(earth)
+library(ranger)
+```
+ 
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+dfd <- read_csv("bank.csv")
+missingData <- dfd
+missingData[missingData == "unknown"] <- NA #to plot mising data
+ 
+df <- dfd %>%  
+  mutate(deposit = if_else(deposit=="yes","1","0"))%>% 
+  mutate_if(is.character, as.factor)
+head(df)
+ 
+set.seed(123)  # for reproducibility
+split  <- rsample::initial_split(df, prop = 0.7, #splitting 70-30 of the data 
+                                 strata = "deposit")
+df_train  <- rsample::training(split)
+df_train1 <- df_train
+df_test   <- rsample::testing(split)
+ 
+```
+
+
+#### Assessing the distribution of the target / response variable
+* Do some features have significant skewness?
+1. As shown below both balance and duration numeric features have skewness in their distribution with respect to the deposit feature.The response is negatively skewed.
+*Does applying a transformation normalize the distribution?
+2.We can see that applying a transformation normalizes the distribution.
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+table(df$despoit)
+transformed_response <- log(df_train$age) #to normalize the data
+models <- c("Non-log transformed model residuals")
+list(
+  m1 = lm(age ~ deposit, data = df_train)
+) %>%
+  map2_dfr(models, ~ broom::augment(.x) %>% mutate(model = .y)) %>%
+  ggplot(aes(.resid)) +
+  geom_histogram(bins = 75) +
+  facet_wrap(~ model, scales = "free_x") +
+  ylab(NULL) +
+  xlab("Residuals")
+models <- c("log transformed model residuals")
+list(
+  m1 = lm(transformed_response ~ deposit, data = df_train)
+) %>%
+  map2_dfr(models, ~ broom::augment(.x) %>% mutate(model = .y)) %>%
+  ggplot(aes(.resid)) +
+  geom_histogram(bins = 75) +
+  facet_wrap(~ model, scales = "free_x") +
+  ylab(NULL) +
+  xlab("Residuals")
+```
+
+
+#### Assessing the dataset for missingness:
+
+1. The number of missing data is 11239
+2. Does there appear to be any patterns to the missing values? Yes, As shown on the plot below poutcome is almost entirely missing + the contact info initially was missing at different periods 
+* Do imputation approaches would impact modeling results?
+1. We should use any imputation approache for the variable "contacts" since it is a uniuqe input, but we can use other approaches such as KNN, and tree-based especially for "education", "job", and "poutcome" to compensate for the missing values 
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+sum(is.na(missingData)) # Number of missing data
+
+missingData %>% #Ploting the missing values
+  is.na() %>%
+  reshape2::melt() %>%
+  ggplot(aes(Var2, Var1, fill = value)) + 
+    geom_raster() + 
+    coord_flip() +
+    scale_y_continuous(NULL, expand = c(0, 0)) +
+    scale_fill_grey(name = "", labels = c("Present", "Missing")) +
+    xlab("Observation") +
+    theme(axis.text.y  = element_text(size = 4))
+ 
+```
+  
+##### Feature filtering
+
+##### Filtering options include:
+
+* removing 
+   1. zero variance features
+   2. near-zero variance features
+   3. highly correlated features (better to do dimension reduction)
+
+
+###### Assessing the variance across the features
+* Do any features have zero variance?
+1.No
+* Do any features have near-zero variance?
+2.Yes, default and pdays attributes
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+caret::nearZeroVar(df_train, saveMetrics = TRUE) %>% 
+  tibble::rownames_to_column() %>% 
+  filter(nzv)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Normalize all numeric columns
+recipe(deposit ~ ., data = df_train) %>%
+  step_YeoJohnson(all_numeric())    
+ 
+```
+ 
+
+
+
+ 
+ 
+
+* Do features have a wide range of values that would benefit from standardization?
+1. Centering and scaling so that numeric variables have zero mean and unit variance, which provides a common comparable unit of measure across all the variables.
+2.Log transformation on all_outcomes()
+Centering for 2 items
+Scaling for 2 items
+
+
+```{r}
+df_recipe <- recipe(deposit ~ ., data = df_train) %>%
+  step_log(all_outcomes())
+
+df_recipe
+
+df_recipe %>%
+  step_center(all_numeric(), -all_outcomes()) %>%
+  step_scale(all_numeric(), -all_outcomes())
+```
+
+
+#### Assess the categorical features.
+* Are categorical levels equally spread out across the features or is “lumping” occurring?
+1. The categorical feature "job" is lumping because it contains levels that have very few observations
+
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+count(df_train, job) %>% arrange(n) 
+```
+* Which values should be one-hot or dummy encoded versus label encoded? Why?
+1.any variables with 2-3 possible outcomes should be transformed using ne-hot or dummy encoded, if more --> then label encoding should be used. 
+a. For example: jobs is label encoded
+b. For example: marital is one-hot or dummy encoded
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Lump levels for two features
+recipe(deposit ~ ., data = df_train) %>%
+  step_dummy(all_nominal(), one_hot = TRUE)
+count(df_train, job)
+# Label encoded
+recipe(deposit ~ ., data = df_train) %>%
+  step_integer(job) %>%
+  prep(df_train) %>%
+  bake(df_train) %>%
+  count(job)
+```
+
+#### Executing a basic feature engineering process
+
+* Looking at our results we see that the best model was associated with k= 12, which resulted in a cross-validated accuracy. The plot below illustrates the cross-validated error rate across the spectrum of hyperparameter values that we specified.
+
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+cv <- trainControl(
+  method = "repeatedcv", 
+  number = 10, 
+  repeats = 5
+)
+hyper_grid <- expand.grid(k = seq(2, 25, by = 1))
+ 
+munther <- train(deposit ~ .,
+  data = df, 
+  method = "knn", 
+  trControl = cv, 
+  tuneGrid = hyper_grid,
+  metric = "Accuracy"
+)
+
+
+
+blueprint <- recipe(deposit ~ ., data = df_train) %>%
+  step_nzv(all_nominal()) %>%
+  step_integer(matches("Qual|Cond|QC|Qu")) %>%
+  step_center(all_numeric(), -all_outcomes()) %>%
+  step_scale(all_numeric(), -all_outcomes()) %>%
+  step_dummy(all_nominal(), -all_outcomes(), one_hot = TRUE)
+head(df_train)
+
+# Specify resampling plan
+
+
+
+cv <- trainControl(
+  method = "repeatedcv", 
+  number = 10, 
+  repeats = 5
+)
+hyper_grid <- expand.grid(k = seq(2, 25, by = 1))
+ 
+munther1 <- train(deposit ~ .,
+  data = df_train, 
+  method = "knn", 
+  trControl = cv, 
+  tuneGrid = hyper_grid,
+  metric = "Accuracy"
+)
+ 
+ 
+```
+
+```{r}
+munther
+ggplot(munther)
+ggplot(munther1)
+```
+* After applying knn to our data set before and after feature engineering the data, I noticed that applying knn on the data before gave us a more accurat outcome compared to the data after being feature engineered. 
+
+
+
+#### logistic regrrssion 
+
+
+* The plot below shows the logistic regression giving the probability of (yes or no = deposit) vs balance
+```{r}
+deposit <- as.numeric(df_train$deposit)-1
+deposit1 <- as.numeric(df_train1$deposit)-1
+age <- as.numeric(df_train$balance)
+age1 <- as.numeric(df_train1$balance)
+
+plot(age, jitter(deposit,0.1), pch=19  )
+model2<- glm(deposit~age,binomial)
+xv <-seq(min(age),max(age))
+yv<- predict(model2,list(age=xv),type="response")
+lines(xv,yv,col="red")
+
+plot(age, jitter(deposit1,0.1), pch=19  )
+model2<- glm(deposit1~age1,binomial)
+xv <-seq(min(age1),max(age1))
+yv<- predict(model2,list(age1=xv),type="response")
+lines(xv,yv,col="red")
+
+```
+*Now reapply the model to your data that has been feature engineered.
+
+*Did your model performance improve?
+1. As shown on the scatter graphs, the model has been improved after appying featur engineer.  
+
+
+
+#### Partial least squares
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# number of principal components to use as predictors from 1-30
+set.seed(123)
+cv_model_pls <- train(
+  deposit ~ ., 
+  data = df_train, 
+  method = "pls",
+  trControl = trainControl(method = "cv", number = 10),
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 30
+)
+
+# model with lowest RMSE
+cv_model_pls$bestTune
+```
+* The resulted RMES of the PLS shows the efficiency of the model 
+
+```{r}
+# results for model with lowest RMSE
+cv_model_pls$results %>%
+  dplyr::filter(ncomp == pull(cv_model_pls$bestTune))
+```
+
+
+
+#### Regularized regression model
+
+* Optimal alpha = 0.3
+* Optimal lambda = 0.001207673	 
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Create training  feature matrices
+# we use model.matrix(...)[, -1] to discard the intercept
+X <- model.matrix(deposit ~ ., df_train)[, -1]
+
+# transform y with log transformation
+Y <- log(as.numeric(df_train$deposit)+1)
+```
+
+
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# for reproducibility
+set.seed(123)
+
+# grid search across 
+cv_glmnet <- train(
+  x = X,
+  y = Y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+
+# model with lowest RMSE
+cv_glmnet$bestTune
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+cv_glmnet$results %>%
+  filter(alpha == cv_glmnet$bestTune$alpha, lambda == cv_glmnet$bestTune$lambda)
+```
+
+* $RMSE = 0.1547197$ $-->$ $MSE = 0.1547197^2$
+* This model has given us the lowest RMSE compared to the previous models 
+
+#### Most influential features
+
+
+* Plotting the top 10 most influential features
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+vip(cv_glmnet, num_features = 10, geom = "point")
+```
+
+##### Plot the top most influential feature
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+deposit <- as.numeric(df_train$deposit)-1
+duration <- as.numeric(df_train1$duration)
+contact <- as.numeric(df_train1$contact["unknown"])
+duration <- as.numeric(df_train1$duration)
+
+plot(duration, jitter(deposit,0.1), pch=19  )
+model2<- glm(deposit~duration,binomial)
+xv <-seq(min(duration),max(duration))
+yv<- predict(model2,list(duration=xv),type="response")
+lines(xv,yv,col="red")
+
+ 
+
+
+```
+* The duration has a positive impact on the outcome of the deposit. 
+
+
+
+#### Applying a MARS model with all features.
+
+* It shows us that 25 of 29 terms were used from 18 of the 42 original predictors.These terms include hinge functions produced from the original 42 predictors.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Fit a basic MARS model
+bank1 <- earth(
+  deposit ~ .,  
+  data = df_train   
+)
+
+# Print model summary
+print(bank1)
+
+bank2 <- earth(
+  deposit ~ .,  
+  data = df_train,
+  degree = 2
+)
+
+# check out the first 10 coefficient terms
+summary(bank2) %>% .$coefficients %>% head(10)
+```
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Cross-validated model
+set.seed(123)  # for reproducibility
+
+hyper_grid <- expand.grid(
+  degree = 1:3, 
+  nprune = seq(2, 100, length.out = 10) %>% floor()
+)
+
+head(hyper_grid)
+
+
+cv_bank <- train(
+  x = subset(df_train, select = -deposit),
+  y = df_train$deposit,
+  method = "earth",
+  metric = "Accuracy",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneGrid = hyper_grid
+)
+
+# View results
+cv_bank$bestTune
+```
+
+* The top 10 features are considered most influential
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+p1 <- vip(cv_bank, num_features = 10, geom = "point", value = "gcv") + ggtitle("GCV")
+p2 <- vip(cv_bank, num_features = 10, geom = "point", value = "rss") + ggtitle("RSS")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+
+* The plot method for MARS model objects provides useful performance and residual plots.
+
+
+*  The vertical dashed lined at 25 tells us the optimal number of terms retained where marginal increases in GCV $R^2$ are less than 0.001.
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+plot(bank1, which = 1)
+```
+
+
+#### Apply a random forest model
+
+* First, we apply a default random forest model
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# number of features
+n_features <- length(setdiff(names(df_train), "deposit"))
+
+# train a default random forest model
+ames_rf1 <- ranger(
+  deposit ~ ., 
+  data = df_train,
+  mtry = floor(n_features / 3),
+  respect.unordered.factors = "order",
+  seed = 123
+)
+
+# get OOB RMSE
+(default_rmse <- sqrt(ames_rf1$prediction.error))
+```
+* Now apply a a full cartesian grid search across various values of $m_try_$, tree complexity & sampling scheme.
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  mtry = floor(n_features * c(.05, .15, .25, .333, .4)),
+  min.node.size = c(1, 3, 5, 10), 
+  replace = c(TRUE, FALSE),                               
+  sample.fraction = c(.5, .63, .8),                       
+  rmse = NA                                               
+)
+
+# execute full cartesian grid search
+for(i in seq_len(nrow(hyper_grid))) {
+  # fit model for ith hyperparameter combination
+  fit <- ranger(
+    formula         = deposit ~ ., 
+    data            = df_train, 
+    num.trees       = n_features * 10,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$min.node.size[i],
+    replace         = hyper_grid$replace[i],
+    sample.fraction = hyper_grid$sample.fraction[i],
+    verbose         = FALSE,
+    seed            = 123,
+    respect.unordered.factors = 'order',
+  )
+  # export OOB error 
+  hyper_grid$rmse[i] <- sqrt(fit$prediction.error)
+}
+
+# assess top 10 models
+hyper_grid %>%
+  arrange(rmse) %>%
+  mutate(perc_gain = (default_rmse - rmse) / default_rmse * 100) %>%
+  head(10)
+```
+
+* Random grid search across the same hyperparamete
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# hyperparameter grid
+hyper_grid <- list(
+  mtries = floor(n_features * c(.05, .15, .25, .333, .4)),
+  min_rows = c(1, 3, 5, 10),
+  max_depth = c(10, 20, 30),
+  sample_rate = c(.55, .632, .70, .80)
+)
+
+# random grid search strategy
+search_criteria <- list(
+  strategy = "RandomDiscrete",
+  stopping_metric = "mse",
+  stopping_tolerance = 0.001,   # stop if improvement is < 0.1%
+  stopping_rounds = 10,         # over the last 10 models
+  max_runtime_secs = 60*5      # or stop search after 5 min.
+)
+# perform grid search 
+random_grid <- df.grid(
+  algorithm = "randomForest",
+  grid_id = "rf_random_grid",
+  x = predictors, 
+  y = response, 
+  training_frame = df_train,
+  hyper_params = hyper_grid,
+  ntrees = n_features * 10,
+  seed = 123,
+  stopping_metric = "RMSE",   
+  stopping_rounds = 10,           # stop if last 10 trees added 
+  stopping_tolerance = 0.005,     # don't improve RMSE by 0.5%
+  search_criteria = search_criteria
+)
+```
+* The Best performing model form the above is the MARS model since it has the lowest RMES 
+
+
+
+
+#### Applying a basic GBM model 
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# run a basic GBM model
+library(gbm)
+set.seed(123)  # for reproducibility
+ames_gbm1 <- gbm(
+  formula = deposit ~ .,
+  data = df_train,
+  distribution = "gaussian",  # SSE loss function
+  n.trees = 5000,
+  shrinkage = 0.1,
+  interaction.depth = 3,
+  n.minobsinnode = 10,
+  cv.folds = 10
+)
+
+# find index for number trees with minimum CV error
+best <- which.min(ames_gbm1$cv.error)
+
+# get MSE and compute RMSE
+sqrt(ames_gbm1$cv.error[best])
+```
+* The RMSE is less accurate (more error) compared to the random forest model 
+
+
+
+
+* After tuning the hyperparameters using the suggested tuning strategy for basic GBMs the model has improved by producing a smaller RMSE
+
+```{r}
+hyper_grid <- expand.grid(
+  learning_rate = c(0.3, 0.1, 0.05, 0.01, 0.005),
+  RMSE = NA,
+  trees = NA,
+  time = NA
+)
+
+# execute grid search
+for(i in seq_len(nrow(hyper_grid))) {
+
+  # fit gbm
+  set.seed(123)  # for reproducibility
+  train_time <- system.time({
+    m <- gbm(
+      formula = deposit ~ .,
+      data = df_train,
+      distribution = "gaussian",
+      n.trees = 5000, 
+      shrinkage = hyper_grid$learning_rate[i], 
+      interaction.depth = 3, 
+      n.minobsinnode = 10,
+      cv.folds = 10 
+   )
+  })
+  
+  # add SSE, trees, and training time to results
+  hyper_grid$RMSE[i]  <- sqrt(min(m$cv.error))
+  hyper_grid$trees[i] <- which.min(m$cv.error)
+  hyper_grid$Time[i]  <- train_time[["elapsed"]]
+
+}
+
+# results
+arrange(hyper_grid, RMSE)
+```
+
+
+
+#### Stochastic GBMs
+
+```{r}
+library(h2o) 
+# refined hyperparameter grid
+hyper_grid <- list(
+  sample_rate = c(0.5, 0.75, 1),              # row subsampling
+  col_sample_rate = c(0.5, 0.75, 1),          # col subsampling for each split
+  col_sample_rate_per_tree = c(0.5, 0.75, 1)  # col subsampling for each tree
+)
+
+# random grid search strategy
+search_criteria <- list(
+  strategy = "RandomDiscrete",
+  stopping_metric = "mse",
+  stopping_tolerance = 0.001,   
+  stopping_rounds = 10,         
+  max_runtime_secs = 60*60      
+)
+
+# perform grid search 
+grid <- h2o.grid(
+  algorithm = "gbm",
+  grid_id = "gbm_grid",
+  x = predictors, 
+  y = response,
+  training_frame = df_train,
+  hyper_params = hyper_grid,
+  ntrees = 6000,
+  learn_rate = 0.01,
+  max_depth = 7,
+  min_rows = 5,
+  nfolds = 10,
+  stopping_rounds = 10,
+  stopping_tolerance = 0,
+  search_criteria = search_criteria,
+  seed = 123
+)
+
+# collect the results and sort by our model performance metric of choice
+grid_perf <- h2o.getGrid(
+  grid_id = "gbm_grid", 
+  sort_by = "mse", 
+  decreasing = FALSE
+)
+```
+
+
+#### Applying an XGBoost mode
+```{r}
+library(recipes)
+xgb_prep <- recipe(deposit ~ ., data = df_train) %>%
+  step_integer(all_nominal()) %>%
+  prep(training = df_train, retain = TRUE) %>%
+  juice()
+
+X <- as.matrix(xgb_prep[setdiff(names(xgb_prep), "Deposit")])
+Y <- xgb_prep$deposit
+
+```
+
+```{r}
+library(gbm) 
+library(xgboost)
+ames_xgb <- xgb.cv(
+  data = X,
+  label = Y,
+  nrounds = 6000,
+  objective = "reg:linear",
+  early_stopping_rounds = 50, 
+  nfold = 10,
+  params = list(
+    eta = 0.05,
+    max_depth = 3,
+    min_child_weight = 3,
+    subsample = 0.8,
+    colsample_bytree = 0.5),
+  verbose = 0
+)  
+
+# minimum test CV RMSE
+min(ames_xgb$evaluation_log$test_rmse_mean)
+```
+*Did your model performance improve?
+*Did regularization help?
+1.The model has slightly improved with the help of regularization
+
+
+
+```{r}
+
+ 
+```
+
